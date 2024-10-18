@@ -1,3 +1,4 @@
+from lib2to3.pgen2 import token
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from copy import deepcopy
@@ -20,46 +21,39 @@ dataset_with_different_lengths = [
     "Hello, my cat is cute",
     "Hello, my dog is cute. Hello, my cat is cute",
     "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
+    "Hi, my dog is cute",
+    "Hello, my cat is cute",
+    "Hi, my dog is cute. Hi, my cat is cute",
+    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
 ]
 
 
 @torch.no_grad()
-def customized_greedy_decoding(tokenized_batch):
-    ################################
-    # TODO: Fill in your code here
-    # Hint: initialize your past key value structure here
-    ################################
-    past_key_values = None
-
-    for _ in range(20):
+def customized_greedy_decoding(batch):
+    tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
+    for timestep in range(50):
         outputs = custom_model(**tokenized_batch)
-        output_tokens = torch.argmax(outputs.logits, dim=-1)
-        tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens[:, -1:]], dim=-1)
-        tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens[:, -1:])], dim=-1)
-        return outputs
+        output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
+        tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
+        tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1)
+
+    return tokenized_batch['input_ids']
 
 @torch.no_grad()
-def greedy_decoding(tokenized_batch):
-    ################################
-    # TODO: Fill in your code here
-    # Hint: initialize your past key value structure here
-    ################################
-    past_key_values = None
-
-    for _ in range(20):
-        outputs = original_model(**tokenized_batch, past_key_values=past_key_values)
-        custom_outputs = custom_model(**tokenized_batch, past_key_values=past_key_values)
-        assert torch.allclose(outputs.logits, custom_outputs.logits, atol=1e-3), "Logits are not equal"
-        output_tokens = torch.argmax(outputs.logits[:,-1], dim=-1, keepdim=True)
-        tokenized_batch['input_ids'] = output_tokens
+def golden_greedy_decoding(batch):
+    tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
+    for timestep in range(50):
+        outputs = original_model(**tokenized_batch)
+        output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
+        tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
         tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1)
-        past_key_values = outputs.past_key_values
+    
+    return tokenized_batch['input_ids']
 
-    # return outputs
-
-bsz = 2
+bsz = 4
 for i in range(0, (len(dataset_with_different_lengths) + bsz - 1) // bsz):
     batch = dataset_with_different_lengths[i * bsz: (i + 1) * bsz]
-    tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
-    greedy_decoding(tokenized_batch)
+    golden_res = golden_greedy_decoding(batch)
+    custom_res = customized_greedy_decoding(batch)
+
+    assert torch.allclose(golden_res, custom_res), "Decoding results are not equal"
