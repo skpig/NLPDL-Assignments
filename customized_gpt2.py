@@ -98,7 +98,8 @@ class CustomizedGPT2Model(GPT2Model):
 
         # Prepare input embeddings
         inputs_embeds = self.wte(input_ids)
-        position_ids = torch.arange(0, input_shape[-1], dtype=torch.long, device=device).unsqueeze(0)
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
         position_embeds = self.wpe(position_ids)
         hidden_states = inputs_embeds + position_embeds
 

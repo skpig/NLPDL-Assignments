@@ -1,4 +1,5 @@
 from lib2to3.pgen2 import token
+from regex import P
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from copy import deepcopy
@@ -31,29 +32,40 @@ dataset_with_different_lengths = [
 @torch.no_grad()
 def customized_greedy_decoding(batch):
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
+    past_key_values = None
     for timestep in range(50):
         outputs = custom_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
+        # tokenized_batch['input_ids'] = output_tokens
         tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
         tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1)
 
     return tokenized_batch['input_ids']
+
 
 @torch.no_grad()
 def golden_greedy_decoding(batch):
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
+    res = tokenized_batch['input_ids']
     for timestep in range(50):
+        tokenized_batch = original_model.prepare_inputs_for_generation(**tokenized_batch)
         outputs = original_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
-        tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
-        tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1)
+        tokenized_batch = {
+            "input_ids": torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1),
+            "attention_mask": torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1),
+            "past_key_values": outputs['past_key_values']
+        }
+        res = torch.cat([res, output_tokens], dim=-1)
     
-    return tokenized_batch['input_ids']
+    return res
+
 
 bsz = 4
 for i in range(0, (len(dataset_with_different_lengths) + bsz - 1) // bsz):
     batch = dataset_with_different_lengths[i * bsz: (i + 1) * bsz]
     golden_res = golden_greedy_decoding(batch)
     custom_res = customized_greedy_decoding(batch)
+    # custom_res = golden_greedy_decoding2(batch)
 
     assert torch.allclose(golden_res, custom_res), "Decoding results are not equal"
