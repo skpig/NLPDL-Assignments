@@ -1,5 +1,4 @@
-from lib2to3.pgen2 import token
-from regex import P
+import time
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from copy import deepcopy
@@ -18,33 +17,39 @@ custom_model = CustomizedGPT2LMHeadModel.from_pretrained("openai-community/gpt2"
 # inputs = tokenizer("Hello, my dog is cute", return_tensors="pt").to('cuda')
 
 dataset_with_different_lengths = [
-    "Hello, my dog is cute",
-    "Hello, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
     "Hi, my dog is cute",
     "Hello, my cat is cute",
     "Hi, my dog is cute. Hi, my cat is cute",
+    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
+    "Hello, my dog is cute",
+    "Hello, my cat is cute",
+    "Hello, my dog is cute. Hello, my cat is cute",
     "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
 ]
 
 
 @torch.no_grad()
 def customized_greedy_decoding(batch):
+    start_time = time.time()
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
-    past_key_values = None
+    tokenized_batch['past_key_values'] = None
+    res = tokenized_batch['input_ids']
     for timestep in range(50):
         outputs = custom_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
-        # tokenized_batch['input_ids'] = output_tokens
-        tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
+        tokenized_batch['past_key_values'] = outputs['past_key_values']
+        tokenized_batch['input_ids'] = output_tokens
         tokenized_batch['attention_mask'] = torch.cat([tokenized_batch['attention_mask'], torch.ones_like(output_tokens)], dim=-1)
 
-    return tokenized_batch['input_ids']
+        res = torch.cat([res, output_tokens], dim=-1)
+
+    print(f"Customized Greedy Decoding: {time.time() - start_time}")
+    return res
 
 
 @torch.no_grad()
 def golden_greedy_decoding(batch):
+    start_time = time.time()
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
     res = tokenized_batch['input_ids']
     for timestep in range(50):
@@ -58,6 +63,7 @@ def golden_greedy_decoding(batch):
         }
         res = torch.cat([res, output_tokens], dim=-1)
     
+    print(f"Golden Greedy Decoding: {time.time() - start_time}")
     return res
 
 
