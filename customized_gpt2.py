@@ -16,8 +16,6 @@ class CustomizedGPT2AttentionWithFasterCache(GPT2Attention):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.prefix_cache = {}
-
     def forward(
         self,
         hidden_states: Optional[Tuple[torch.FloatTensor]],

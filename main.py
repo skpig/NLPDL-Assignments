@@ -1,31 +1,19 @@
 import time
+import random
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from copy import deepcopy
 
 from customized_gpt2 import CustomizedGPT2LMHeadModel
 
-# tokenizer = AutoTokenizer.from_pretrained("/data2/pretrain/Qwen/Qwen2-0.5B/")
 tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
 tokenizer.padding_side = 'left'
 tokenizer.pad_token = tokenizer.eos_token
-# config = AutoConfig.from_pretrained("openai-community/gpt2", _attn_implementaion='eager')
-original_model = AutoModelForCausalLM.from_pretrained("openai-community/gpt2", attn_implementation="eager").to('cuda')
-# original_model = AutoModelForCausalLM.from_pretrained("openai-community/gpt2", config=config).to('cuda')
-custom_model = CustomizedGPT2LMHeadModel.from_pretrained("openai-community/gpt2", attn_implementation="eager").to('cuda')
+# original_model = AutoModelForCausalLM.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map='auto')
+# custom_model = CustomizedGPT2LMHeadModel.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map="auto")
 
-# inputs = tokenizer("Hello, my dog is cute", return_tensors="pt").to('cuda')
-
-dataset_with_different_lengths = [
-    "Hi, my dog is cute",
-    "Hello, my cat is cute",
-    "Hi, my dog is cute. Hi, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
-    "Hello, my dog is cute",
-    "Hello, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute",
-    "Hello, my dog is cute. Hello, my cat is cute. Hello, my dog is cute. Hello, my cat is cute",
-]
+with open("data.txt") as f:
+    prompt_dataset = [i.strip() for i in f.readlines()]
 
 @torch.no_grad()
 def customized_greedy_decoding_wo_cache(batch):
@@ -33,7 +21,7 @@ def customized_greedy_decoding_wo_cache(batch):
     tokenized_batch['past_key_values'] = None
     res = tokenized_batch['input_ids']
     start_time = time.time()
-    for timestep in range(500):
+    for timestep in range(MAX_NEW_LENGTH):
         outputs = custom_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
         tokenized_batch['input_ids'] = torch.cat([tokenized_batch['input_ids'], output_tokens], dim=-1)
@@ -41,8 +29,7 @@ def customized_greedy_decoding_wo_cache(batch):
 
         res = torch.cat([res, output_tokens], dim=-1)
 
-    print(f"Customized Greedy Decoding: {time.time() - start_time}")
-    return res
+    return res, time.time() - start_time
 
 
 @torch.no_grad()
@@ -51,7 +38,7 @@ def customized_greedy_decoding(batch):
     tokenized_batch['past_key_values'] = None
     res = tokenized_batch['input_ids']
     start_time = time.time()
-    for timestep in range(500):
+    for timestep in range(MAX_NEW_LENGTH):
         outputs = custom_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
         tokenized_batch['past_key_values'] = outputs['past_key_values']
@@ -60,15 +47,14 @@ def customized_greedy_decoding(batch):
 
         res = torch.cat([res, output_tokens], dim=-1)
 
-    print(f"Customized Greedy Decoding: {time.time() - start_time}")
-    return res
+    return res, time.time() - start_time
 
 @torch.no_grad()
 def golden_greedy_decoding_wo_cache(batch):
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
     res = tokenized_batch['input_ids']
     start_time = time.time()
-    for timestep in range(500):
+    for timestep in range(MAX_NEW_LENGTH):
         tokenized_batch = original_model.prepare_inputs_for_generation(**tokenized_batch)
         outputs = original_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
@@ -78,8 +64,7 @@ def golden_greedy_decoding_wo_cache(batch):
         }
         res = torch.cat([res, output_tokens], dim=-1)
     
-    print(f"Golden Greedy Decoding: {time.time() - start_time}")
-    return res
+    return res, time.time() - start_time
 
 
 @torch.no_grad()
@@ -87,7 +72,7 @@ def golden_greedy_decoding(batch):
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
     res = tokenized_batch['input_ids']
     start_time = time.time()
-    for timestep in range(500):
+    for timestep in range(MAX_NEW_LENGTH):
         tokenized_batch = original_model.prepare_inputs_for_generation(**tokenized_batch)
         outputs = original_model(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
@@ -98,15 +83,30 @@ def golden_greedy_decoding(batch):
         }
         res = torch.cat([res, output_tokens], dim=-1)
     
-    print(f"Golden Greedy Decoding: {time.time() - start_time}")
-    return res
+    return res, time.time() - start_time
 
 
-bsz = 4
-for i in range(0, (len(dataset_with_different_lengths) + bsz - 1) // bsz):
-    batch = dataset_with_different_lengths[i * bsz: (i + 1) * bsz]
-    golden_res = golden_greedy_decoding(batch)
-    custom_res = customized_greedy_decoding_wo_cache(batch)
-    # custom_res = golden_greedy_decoding2(batch)
+MAX_NEW_LENGTH = 100
+bsz = 2
+times = [0, 0, 0, 0]
+
+for i in range(0, (len(prompt_dataset) + bsz - 1) // bsz):
+    batch = prompt_dataset[i * bsz: (i + 1) * bsz]
+    golden_res, golden_time = golden_greedy_decoding(batch)
+    golden_wo_cache_res, golden_wo_cache_time = golden_greedy_decoding_wo_cache(batch)
+    custom_res, custom_time = customized_greedy_decoding(batch)
+    custom_wo_cache_res, custom_wo_cache_time = customized_greedy_decoding_wo_cache(batch)
+
+    times[0] += golden_time
+    times[1] += golden_wo_cache_time
+    times[2] += custom_time
+    times[3] += custom_wo_cache_time
 
     assert torch.equal(golden_res, custom_res), "Decoding results are not equal"
+    assert torch.equal(golden_wo_cache_res, custom_wo_cache_res), "Decoding results are not equal"
+    assert torch.equal(golden_res, custom_wo_cache_res), "Decoding results are not equal"
+
+print("Time taken for golden greedy decoding: ", times[0])
+print("Time taken for golden greedy decoding without cache: ", times[1])
+print("Time taken for customized greedy decoding: ", times[2])
+print("Time taken for customized greedy decoding without cache: ", times[3])
