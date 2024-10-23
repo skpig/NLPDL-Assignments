@@ -4,21 +4,12 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from copy import deepcopy
 
+from customized_gpt2_answer import CustomizedGPT2LMHeadModelWithKVCache
 from customized_gpt2 import CustomizedGPT2LMHeadModel
-
-tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
-tokenizer.padding_side = 'left'
-tokenizer.pad_token = tokenizer.eos_token
-# original_model = AutoModelForCausalLM.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map='auto')
-# custom_model = CustomizedGPT2LMHeadModel.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map="auto")
-
-with open("data.txt") as f:
-    prompt_dataset = [i.strip() for i in f.readlines()]
 
 @torch.no_grad()
 def customized_greedy_decoding_wo_cache(batch):
     tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to('cuda')
-    tokenized_batch['past_key_values'] = None
     res = tokenized_batch['input_ids']
     start_time = time.time()
     for timestep in range(MAX_NEW_LENGTH):
@@ -39,7 +30,7 @@ def customized_greedy_decoding(batch):
     res = tokenized_batch['input_ids']
     start_time = time.time()
     for timestep in range(MAX_NEW_LENGTH):
-        outputs = custom_model(**tokenized_batch)
+        outputs = custom_model_w_cache(**tokenized_batch)
         output_tokens = torch.argmax(outputs['logits'][:,-1], dim=-1, keepdim=True)
         tokenized_batch['past_key_values'] = outputs['past_key_values']
         tokenized_batch['input_ids'] = output_tokens
@@ -86,27 +77,38 @@ def golden_greedy_decoding(batch):
     return res, time.time() - start_time
 
 
-MAX_NEW_LENGTH = 100
-bsz = 2
-times = [0, 0, 0, 0]
+if __name__ == "__main__":
+    MAX_NEW_LENGTH = 100
+    bsz = 64
+    times = [0, 0, 0, 0]
 
-for i in range(0, (len(prompt_dataset) + bsz - 1) // bsz):
-    batch = prompt_dataset[i * bsz: (i + 1) * bsz]
-    golden_res, golden_time = golden_greedy_decoding(batch)
-    golden_wo_cache_res, golden_wo_cache_time = golden_greedy_decoding_wo_cache(batch)
-    custom_res, custom_time = customized_greedy_decoding(batch)
-    custom_wo_cache_res, custom_wo_cache_time = customized_greedy_decoding_wo_cache(batch)
+    tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
+    tokenizer.padding_side = 'left'
+    tokenizer.pad_token = tokenizer.eos_token
+    original_model = AutoModelForCausalLM.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map='cuda')
+    custom_model = CustomizedGPT2LMHeadModel.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map="cuda")
+    custom_model_w_cache = CustomizedGPT2LMHeadModelWithKVCache.from_pretrained("openai-community/gpt2", attn_implementation="eager", device_map="cuda")
 
-    times[0] += golden_time
-    times[1] += golden_wo_cache_time
-    times[2] += custom_time
-    times[3] += custom_wo_cache_time
+    with open("data.txt") as f:
+        prompt_dataset = [i.strip() for i in f.readlines()]
 
-    assert torch.equal(golden_res, custom_res), "Decoding results are not equal"
-    assert torch.equal(golden_wo_cache_res, custom_wo_cache_res), "Decoding results are not equal"
-    assert torch.equal(golden_res, custom_wo_cache_res), "Decoding results are not equal"
+    for i in range(0, (len(prompt_dataset) + bsz - 1) // bsz):
+        batch = prompt_dataset[i * bsz: (i + 1) * bsz]
+        golden_res, golden_time = golden_greedy_decoding(batch)
+        golden_wo_cache_res, golden_wo_cache_time = golden_greedy_decoding_wo_cache(batch)
+        custom_res, custom_time = customized_greedy_decoding(batch)
+        custom_wo_cache_res, custom_wo_cache_time = customized_greedy_decoding_wo_cache(batch)
 
-print("Time taken for golden greedy decoding: ", times[0])
-print("Time taken for golden greedy decoding without cache: ", times[1])
-print("Time taken for customized greedy decoding: ", times[2])
-print("Time taken for customized greedy decoding without cache: ", times[3])
+        times[0] += golden_time
+        times[1] += golden_wo_cache_time
+        times[2] += custom_time
+        times[3] += custom_wo_cache_time
+
+        assert torch.equal(golden_res, custom_res), "Decoding results are not equal"
+        assert torch.equal(golden_wo_cache_res, custom_wo_cache_res), "Decoding results are not equal"
+        assert torch.equal(golden_res, custom_wo_cache_res), "Decoding results are not equal"
+
+    print("Time taken for golden greedy decoding: ", times[0])
+    print("Time taken for golden greedy decoding without cache: ", times[1])
+    print("Time taken for customized greedy decoding: ", times[2])
+    print("Time taken for customized greedy decoding without cache: ", times[3])
